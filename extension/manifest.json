@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Ries Glossary Translator",
+  "description": "Translate Chinese text to English using an LLM while forcing glossary terms to appear as English(中文) with underline formatting.",
+  "version": "0.1.0",
+  "permissions": [
+    "storage",
+    "contextMenus"
+  ],
+  "host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Ries Glossary Translator",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-script.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

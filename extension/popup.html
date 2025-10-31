@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ries Glossary Translator</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="header">
+        <h1>Ries Glossary Translator</h1>
+        <p class="subtitle">对照 <a href="https://ries.ai/zh/learn-english" target="_blank" rel="noopener noreferrer">Ries Learn English</a> 提示，使用大模型翻译并保留术语。</p>
+      </header>
+      <section class="input-section">
+        <label for="source-text">输入要翻译的中文</label>
+        <textarea id="source-text" rows="6" placeholder="粘贴或输入中文文本..."></textarea>
+        <div class="actions">
+          <button id="translate-btn" class="primary">翻译</button>
+          <button id="clear-btn" class="ghost">清空</button>
+        </div>
+      </section>
+      <section class="result-section" id="result-section" hidden>
+        <div class="result-header">
+          <h2>翻译结果</h2>
+          <span id="status-label">准备就绪</span>
+        </div>
+        <div class="result-content">
+          <div class="original">
+            <h3>原文</h3>
+            <p id="original-text"></p>
+          </div>
+          <div class="translation">
+            <h3>译文</h3>
+            <div id="formatted-translation"></div>
+          </div>
+        </div>
+        <button id="copy-btn" class="secondary">复制译文</button>
+      </section>
+      <section class="glossary-section">
+        <div class="section-header">
+          <h2>术语表</h2>
+          <a class="edit-link" href="options.html" target="_blank">编辑</a>
+        </div>
+        <ul id="glossary-list"></ul>
+      </section>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

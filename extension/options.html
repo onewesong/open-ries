@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ries Glossary Translator 设置</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="options-container">
+      <header>
+        <h1>Ries Glossary Translator</h1>
+        <p>配置大模型接口和术语表，确保翻译输出满足 <a href="https://ries.ai/zh/learn-english" target="_blank" rel="noopener noreferrer">Ries Learn English</a> 的规范。</p>
+      </header>
+      <section id="status" role="alert" aria-live="polite"></section>
+      <form id="settings-form">
+        <fieldset>
+          <legend>接口配置</legend>
+          <label>
+            API Base URL
+            <input type="url" id="api-base" name="apiBaseUrl" placeholder="https://api.openai.com/v1" required />
+          </label>
+          <label>
+            API Key
+            <input type="password" id="api-key" name="apiKey" placeholder="sk-..." required />
+          </label>
+          <label>
+            模型
+            <input type="text" id="model" name="model" placeholder="gpt-4o-mini" required />
+          </label>
+          <label>
+            Temperature
+            <input type="number" id="temperature" name="temperature" min="0" max="1" step="0.1" />
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend>术语表</legend>
+          <p class="hint">确保翻译中特定中文词汇按格式 <code>English(中文)</code> 输出，插件会自动加下划线。</p>
+          <div id="glossary-container"></div>
+          <button type="button" id="add-term" class="secondary">添加术语</button>
+        </fieldset>
+        <div class="actions">
+          <button type="submit" class="primary">保存设置</button>
+          <button type="button" id="reset-defaults" class="ghost">恢复默认</button>
+        </div>
+      </form>
+      <footer>
+        <p>提示：API Key 仅保存在浏览器同步存储中；如使用兼容 OpenAI 的代理，可修改 Base URL 和模型名称。</p>
+      </footer>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>
