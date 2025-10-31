@@ -543,18 +543,18 @@
     }, delay);
   }
 
-  function restoreCurrentInline() {
+  function clearCurrentInline({ revert = true } = {}) {
     if (!currentInline) {
       return;
     }
 
     const { placeholder, originalText, requestToken } = currentInline;
 
-    if (requestToken) {
+    if (requestToken && revert) {
       requestToken.cancelled = true;
     }
 
-    if (placeholder && placeholder.isConnected) {
+    if (revert && placeholder && placeholder.isConnected) {
       placeholder.replaceWith(document.createTextNode(originalText));
     }
 
@@ -672,7 +672,6 @@
     const target = getInlineTargetFromPoint(event.clientX, event.clientY);
 
     if (!target) {
-      restoreCurrentInline();
       return;
     }
 
@@ -680,7 +679,7 @@
       return;
     }
 
-    restoreCurrentInline();
+    clearCurrentInline({ revert: false });
 
     const replacement = createInlineReplacement(target);
     if (!replacement) {
@@ -723,7 +722,7 @@
         cancelAnimationFrame(ctrlHoverRAF);
         ctrlHoverRAF = null;
       }
-      restoreCurrentInline();
+      clearCurrentInline({ revert: false });
     } else {
       hideFloatingUI();
     }
@@ -892,7 +891,7 @@
     }
 
     if (currentInline?.placeholder && !currentInline.placeholder.contains(target)) {
-      restoreCurrentInline();
+      clearCurrentInline({ revert: false });
     }
   }
 
