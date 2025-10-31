@@ -1,65 +1,109 @@
 const STYLE_ID = 'ries-glossary-style';
+const INLINE_STYLE_ID = 'ries-inline-style';
 const OVERLAY_ID = 'ries-glossary-overlay';
 
 chrome.runtime.onMessage.addListener((message) => {
-  if (message?.type === 'RIES_TRANSLATE_SELECTION') {
-    const selection = message.text || window.getSelection()?.toString();
-    if (!selection || !selection.trim()) {
-      showOverlay({
-        original: '',
-        formatted: '<em>请先选择需要翻译的中文文本。</em>',
-        translation: '',
-        isError: true
-      });
-      return;
-    }
-
-    showOverlay({
-      original: selection,
-      formatted: '<span class="ries-loading">正在请求翻译...</span>',
-      translation: '',
-      isLoading: true
-    });
-
-    chrome.runtime.sendMessage(
-      {
-        type: 'RIES_REQUEST_TRANSLATION',
-        text: selection
-      },
-      (response) => {
-        const lastError = chrome.runtime.lastError;
-        if (lastError) {
-          console.error('翻译请求失败', lastError);
-          showOverlay({
-            original: selection,
-            formatted: `<span class="ries-error">${escapeHtml(lastError.message || '翻译失败')}</span>`,
-            translation: '',
-            isError: true
-          });
-          return;
-        }
-        if (!response?.success) {
-          showOverlay({
-            original: selection,
-            formatted: `<span class="ries-error">${escapeHtml(response?.error || '翻译失败')}</span>`,
-            translation: '',
-            isError: true
-          });
-          return;
-        }
-
-        showOverlay({
-          original: response.result.original,
-          formatted: response.result.formatted,
-          translation: response.result.translation,
-          isError: false
-        });
-      }
-    );
+  if (message?.type !== 'RIES_TRANSLATE_SELECTION') {
+    return;
   }
+
+  const selection = window.getSelection();
+  const selectedText = (message.text ?? selection?.toString() ?? '').trim();
+
+  if (!selection || !selection.rangeCount) {
+    showOverlay({
+      original: '',
+      formatted: '<em>请先选择需要翻译的中文文本。</em>',
+      translation: '',
+      replacements: [],
+      isError: true
+    });
+    return;
+  }
+
+  if (!selectedText) {
+    showOverlay({
+      original: '',
+      formatted: '<em>请先选择需要翻译的中文文本。</em>',
+      translation: '',
+      replacements: [],
+      isError: true
+    });
+    return;
+  }
+
+  const activeRange = selection.getRangeAt(0).cloneRange();
+
+  showOverlay({
+    original: selectedText,
+    formatted: '<span class="ries-loading">正在请求翻译...</span>',
+    translation: '',
+    replacements: [],
+    isLoading: true
+  });
+
+  chrome.runtime.sendMessage(
+    {
+      type: 'RIES_REQUEST_TRANSLATION',
+      text: selectedText
+    },
+    (response) => {
+      const lastError = chrome.runtime.lastError;
+      if (lastError) {
+        console.error('翻译请求失败', lastError);
+        showOverlay({
+          original: selectedText,
+          formatted: `<span class="ries-error">${escapeHtml(lastError.message || '翻译失败')}</span>`,
+          translation: '',
+          replacements: [],
+          isError: true
+        });
+        return;
+      }
+
+      if (!response?.success) {
+        showOverlay({
+          original: selectedText,
+          formatted: `<span class="ries-error">${escapeHtml(response?.error || '翻译失败')}</span>`,
+          translation: '',
+          replacements: [],
+          isError: true
+        });
+        return;
+      }
+
+      const result = response.result || {};
+      const segments = Array.isArray(result.segments) ? result.segments : [];
+      const replacements = Array.isArray(result.replacements) ? result.replacements : [];
+      const applied = applySegmentsToRange(activeRange, segments);
+
+      showOverlay({
+        original: result.original || selectedText,
+        formatted:
+          result.formatted ||
+          escapeHtml(result.translation || selectedText).replace(/\n/g, '<br />'),
+        translation: result.translation || selectedText,
+        replacements,
+        fullFormatted: result.fullFormatted,
+        fullTranslation: result.fullTranslation,
+        hasApplied: applied,
+        isError: false
+      });
+    }
+  );
 });
 
-function showOverlay({ original, formatted, translation, isError, isLoading }) {
+function showOverlay({
+  original,
+  formatted,
+  translation,
+  replacements = [],
+  fullFormatted = '',
+  fullTranslation = '',
+  hasApplied = false,
+  isError,
+  isLoading
+}) {
   ensureStyles();
   let overlay = document.getElementById(OVERLAY_ID);
   if (!overlay) {
@@ -88,17 +132,74 @@ function showOverlay({ original, formatted, translation, isError, isLoading }) {
   const originalEl = overlay.querySelector('.ries-original-text');
   const translationEl = overlay.querySelector('.ries-translation-text');
   const statusEl = overlay.querySelector('.ries-status');
+  const replacementsSection = overlay.querySelector('.ries-replacements-section');
+  const replacementsList = overlay.querySelector('.ries-replacements');
+  const fullSection = overlay.querySelector('.ries-full-section');
+  const fullTextEl = overlay.querySelector('.ries-full-text');
 
   originalEl.textContent = original || '';
   translationEl.innerHTML = formatted || '';
   translationEl.dataset.raw = translation || '';
+
+  if (replacementsList) {
+    replacementsList.innerHTML = '';
+    if (isLoading) {
+      const loadingItem = document.createElement('li');
+      loadingItem.className = 'ries-empty';
+      loadingItem.textContent = '术语匹配中...';
+      replacementsList.appendChild(loadingItem);
+    } else if (replacements.length) {
+      replacements.forEach((item) => {
+        if (!item?.zh || !item?.en) {
+          return;
+        }
+        const li = document.createElement('li');
+        const enSpan = document.createElement('span');
+        enSpan.textContent = item.en;
+        const zhSpan = document.createElement('span');
+        zhSpan.textContent = item.zh;
+        li.appendChild(enSpan);
+        li.appendChild(zhSpan);
+        replacementsList.appendChild(li);
+      });
+    } else {
+      const empty = document.createElement('li');
+      empty.className = 'ries-empty';
+      empty.textContent = '未匹配到需要替换的术语';
+      replacementsList.appendChild(empty);
+    }
+  }
+
+  if (replacementsSection) {
+    replacementsSection.style.display = 'block';
+  }
+
+  if (fullSection && fullTextEl) {
+    if (!isLoading && (fullFormatted || fullTranslation)) {
+      fullSection.style.display = 'block';
+      fullTextEl.innerHTML = fullFormatted || escapeHtml(fullTranslation).replace(/\n/g, '<br />');
+      fullTextEl.dataset.raw = fullTranslation || fullTextEl.innerText || '';
+    } else {
+      fullSection.style.display = 'none';
+      fullTextEl.innerHTML = '';
+      fullTextEl.dataset.raw = '';
+    }
+  }
 
   if (isLoading) {
     overlay.classList.add('ries-loading-state');
     statusEl.textContent = '翻译中...';
   } else {
     overlay.classList.remove('ries-loading-state');
-    statusEl.textContent = isError ? '发生错误' : '翻译完成';
+    if (isError) {
+      statusEl.textContent = '发生错误';
+    } else if (hasApplied) {
+      statusEl.textContent = `已替换 ${replacements.length} 个术语`;
+    } else if (replacements.length) {
+      statusEl.textContent = '替换结果已显示';
+    } else {
+      statusEl.textContent = '未匹配到术语';
+    }
   }
 
   overlay.style.display = 'block';
@@ -229,12 +330,57 @@ function ensureStyles() {
       opacity: 1;
     }
 
-    #${OVERLAY_ID} .ries-glossary-term {
+    #${OVERLAY_ID} .ries-glossary-term,
+    #${OVERLAY_ID} .ries-glossary-inline {
       text-decoration: underline;
       text-decoration-thickness: 2px;
       text-underline-offset: 4px;
       font-weight: 600;
       color: #0f172a;
+    }
+
+    #${OVERLAY_ID} .ries-replacements-section {
+      margin-top: 8px;
+    }
+
+    #${OVERLAY_ID} .ries-replacements {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    #${OVERLAY_ID} .ries-replacements li {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 13px;
+    }
+
+    #${OVERLAY_ID} .ries-replacements li span:first-child {
+      font-weight: 600;
+      color: #0f172a;
+    }
+
+    #${OVERLAY_ID} .ries-replacements li span:last-child {
+      color: #475569;
+    }
+
+    #${OVERLAY_ID} .ries-replacements .ries-empty {
+      font-style: italic;
+      color: #64748b;
+    }
+
+    #${OVERLAY_ID} .ries-full-section {
+      margin-top: 8px;
+    }
+
+    #${OVERLAY_ID} .ries-full-text {
+      font-size: 13px;
+      color: #0f172a;
+      line-height: 1.6;
     }
 
     #${OVERLAY_ID} .ries-loading {
@@ -251,7 +397,82 @@ function ensureStyles() {
       pointer-events: none;
     }
   `;
-  document.head.appendChild(style);
+  (document.head || document.documentElement).appendChild(style);
+}
+
+function applySegmentsToRange(range, segments) {
+  if (!range || !Array.isArray(segments) || !segments.length) {
+    return false;
+  }
+
+  const hasGlossary = segments.some((segment) => segment?.type === 'glossary');
+  if (!hasGlossary) {
+    return false;
+  }
+
+  ensureInlineTermStyles();
+
+  const { fragment, nodes } = createFragmentFromSegments(segments);
+  range.deleteContents();
+  range.insertNode(fragment);
+
+  const selection = window.getSelection();
+  if (selection && nodes.length) {
+    selection.removeAllRanges();
+    const afterRange = document.createRange();
+    afterRange.setStartAfter(nodes[nodes.length - 1]);
+    afterRange.collapse(true);
+    selection.addRange(afterRange);
+  }
+
+  return true;
+}
+
+function createFragmentFromSegments(segments) {
+  const fragment = document.createDocumentFragment();
+  const nodes = [];
+
+  segments.forEach((segment) => {
+    let node;
+    if (segment?.type === 'glossary') {
+      const en = segment?.en ?? '';
+      const zh = segment?.zh ?? '';
+      const span = document.createElement('span');
+      span.className = 'ries-glossary-inline';
+      span.dataset.zh = zh;
+      span.dataset.en = en;
+      span.textContent = `${en}(${zh})`;
+      span.title = en && zh ? `${en} (${zh})` : en || zh;
+      node = span;
+    } else {
+      node = document.createTextNode(segment?.text ?? '');
+    }
+    fragment.appendChild(node);
+    nodes.push(node);
+  });
+
+  return { fragment, nodes };
+}
+
+function ensureInlineTermStyles() {
+  if (document.getElementById(INLINE_STYLE_ID)) {
+    return;
+  }
+  const style = document.createElement('style');
+  style.id = INLINE_STYLE_ID;
+  style.textContent = `
+    .ries-glossary-inline {
+      text-decoration: underline;
+      text-underline-offset: 4px;
+      text-decoration-thickness: 2px;
+      text-decoration-color: #0f766e;
+      font-weight: 600;
+      color: inherit;
+      cursor: help;
+      border-bottom: none;
+    }
+  `;
+  (document.head || document.documentElement).appendChild(style);
 }
 
 function getOverlayTemplate() {
@@ -268,6 +489,16 @@ function getOverlayTemplate() {
       <div class="ries-section">
         <div class="ries-label">翻译</div>
         <div class="ries-content ries-translation-text"></div>
+      </div>
+      <div class="ries-section ries-replacements-section">
+        <div class="ries-label">已替换术语</div>
+        <div class="ries-content">
+          <ul class="ries-replacements"></ul>
+        </div>
+      </div>
+      <div class="ries-section ries-full-section" style="display:none;">
+        <div class="ries-label">完整英文参考</div>
+        <div class="ries-content ries-full-text"></div>
       </div>
     </div>
     <div class="ries-controls">

@@ -77,8 +77,8 @@ function onSubmit(event) {
   const model = (formData.get('model') || '').trim();
   const temperature = parseFloat(formData.get('temperature'));
 
-  if (!apiBaseUrl || !apiKey || !model) {
-    showStatus('请填写完整的接口配置。', true);
+  if (!apiBaseUrl || !model) {
+    showStatus('请至少填写 Base URL 与模型名称。API Key 可留空以仅使用术语替换。', true);
     return;
   }
 

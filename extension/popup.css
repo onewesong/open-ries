@@ -154,7 +154,8 @@ button.ghost:hover {
   word-break: break-word;
 }
 
-#formatted-translation .ries-glossary-term {
+#formatted-translation .ries-glossary-term,
+#formatted-translation .ries-glossary-inline {
   text-decoration: underline;
   text-decoration-thickness: 2px;
   text-underline-offset: 4px;

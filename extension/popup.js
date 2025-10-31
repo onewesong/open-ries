@@ -57,7 +57,14 @@ translateButton.addEventListener('click', async () => {
 
       formattedTranslation.innerHTML = response.result.formatted;
       formattedTranslation.dataset.raw = response.result.translation;
-      statusLabel.textContent = '翻译完成';
+      const replacements = Array.isArray(response.result.replacements)
+        ? response.result.replacements
+        : [];
+      if (replacements.length) {
+        statusLabel.textContent = `已替换 ${replacements.length} 个术语`;
+      } else {
+        statusLabel.textContent = '未匹配到术语';
+      }
     }
   );
 });
