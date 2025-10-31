@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ries Terminology Translator</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <header>
+        <h1>Ries Terminology Translator</h1>
+        <p>
+          Paste Chinese text to translate it using your configured large-language-model
+          endpoint. Key terminology will be underlined with the original Chinese.
+        </p>
+      </header>
+      <section class="input">
+        <label for="source">Chinese text</label>
+        <textarea id="source" placeholder="输入要翻译的中文…" rows="6"></textarea>
+      </section>
+      <footer>
+        <button id="translate">Translate</button>
+        <a href="#" id="open-options">Configure API…</a>
+      </footer>
+      <section id="result" class="result hidden">
+        <h2>Translation</h2>
+        <div id="translation-output"></div>
+        <h3>Terminology</h3>
+        <ul id="terminology-list"></ul>
+      </section>
+      <section id="error" class="error hidden"></section>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
