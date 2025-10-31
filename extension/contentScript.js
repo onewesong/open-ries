@@ -2,6 +2,9 @@
   const OVERLAY_ID = 'ries-translation-overlay';
   const ICON_ID = 'ries-selection-icon';
   const TOOLTIP_ID = 'ries-selection-tooltip';
+  const INLINE_CLASS = 'ries-inline-translation';
+  const INLINE_LOADING_CLASS = 'ries-inline-loading';
+  const INLINE_MAX_LENGTH = 400;
 
   let floatingIcon = null;
   let floatingTooltip = null;
@@ -10,6 +13,12 @@
   let activeRequest = null;
   let iconHovered = false;
   const translationCache = new Map();
+  const pendingTranslations = new Map();
+
+  let ctrlActive = false;
+  let currentInline = null;
+  let pendingCtrlEvent = null;
+  let ctrlHoverRAF = null;
 
   function ensureStyles() {
     if (document.getElementById('ries-translation-style')) {
@@ -169,6 +178,27 @@
         font-style: italic;
         margin-top: 6px;
       }
+
+      .${INLINE_CLASS} {
+        display: inline;
+        background: rgba(76, 110, 245, 0.15);
+        color: inherit;
+        border-radius: 6px;
+        padding: 0 4px;
+        transition: background 0.2s ease, color 0.2s ease;
+      }
+
+      .${INLINE_CLASS}.${INLINE_LOADING_CLASS} {
+        background: rgba(148, 163, 184, 0.2);
+        color: #94a3b8;
+      }
+
+      .${INLINE_CLASS} .ries-annotated {
+        text-decoration: underline;
+        text-decoration-style: dashed;
+        text-decoration-color: rgba(148, 163, 184, 0.55);
+        font-weight: 600;
+      }
     `;
 
     document.head.appendChild(style);
@@ -178,7 +208,12 @@
     let current = node;
     while (current) {
       if (current.nodeType === Node.ELEMENT_NODE) {
-        if (current.id === ICON_ID || current.id === TOOLTIP_ID || current.id === OVERLAY_ID) {
+        if (
+          current.id === ICON_ID ||
+          current.id === TOOLTIP_ID ||
+          current.id === OVERLAY_ID ||
+          current.classList?.contains(INLINE_CLASS)
+        ) {
           return true;
         }
       }
@@ -208,6 +243,83 @@
           return char;
       }
     });
+  }
+
+  function normalizeText(value) {
+    return String(value ?? '').replace(/\s+/g, ' ').trim();
+  }
+
+  function isDisallowedTarget(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) {
+      return true;
+    }
+    if (isWithinWidget(element)) {
+      return true;
+    }
+    if (element.closest('script, style, textarea, input, button, select, svg, code, pre, noscript')) {
+      return true;
+    }
+    return false;
+  }
+
+  function getInlineTargetFromPoint(clientX, clientY) {
+    let range = null;
+    if (document.caretRangeFromPoint) {
+      range = document.caretRangeFromPoint(clientX, clientY);
+    } else if (document.caretPositionFromPoint) {
+      const caretPosition = document.caretPositionFromPoint(clientX, clientY);
+      if (caretPosition) {
+        range = document.createRange();
+        range.setStart(caretPosition.offsetNode, caretPosition.offset);
+        range.collapse(true);
+      }
+    }
+
+    if (!range) {
+      return null;
+    }
+
+    let node = range.startContainer;
+    if (!node) {
+      return null;
+    }
+
+    if (node.nodeType !== Node.TEXT_NODE) {
+      node = node.childNodes?.[range.startOffset] || node.firstChild;
+    }
+
+    while (node && node.nodeType !== Node.TEXT_NODE && node.firstChild) {
+      node = node.firstChild;
+    }
+
+    if (!node || node.nodeType !== Node.TEXT_NODE) {
+      return null;
+    }
+
+    const parentElement = node.parentElement;
+    if (isDisallowedTarget(parentElement)) {
+      return null;
+    }
+
+    const originalText = node.textContent || '';
+    const trimmed = originalText.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const normalized = normalizeText(trimmed);
+
+    if (!normalized || normalized.length > INLINE_MAX_LENGTH) {
+      return null;
+    }
+
+    return {
+      node,
+      parentElement,
+      originalText,
+      normalized,
+      translationText: trimmed
+    };
   }
 
   function ensureIcon() {
@@ -416,6 +528,10 @@
     if (selectionCheckTimeout) {
       clearTimeout(selectionCheckTimeout);
     }
+    if (ctrlActive) {
+      hideFloatingUI();
+      return;
+    }
     selectionCheckTimeout = setTimeout(() => {
       selectionCheckTimeout = null;
       const details = getSelectionDetails();
@@ -425,6 +541,204 @@
       }
       showSelectionIcon(details.rect, details.text);
     }, delay);
+  }
+
+  function restoreCurrentInline() {
+    if (!currentInline) {
+      return;
+    }
+
+    const { placeholder, originalText, requestToken } = currentInline;
+
+    if (requestToken) {
+      requestToken.cancelled = true;
+    }
+
+    if (placeholder && placeholder.isConnected) {
+      placeholder.replaceWith(document.createTextNode(originalText));
+    }
+
+    currentInline = null;
+  }
+
+  function createInlineReplacement(target) {
+    if (!target?.node?.parentNode) {
+      return null;
+    }
+
+    ensureStyles();
+
+    const span = document.createElement('span');
+    span.className = `${INLINE_CLASS} ${INLINE_LOADING_CLASS}`;
+    span.setAttribute('data-ries-inline', 'true');
+    span.textContent = '翻译中...';
+
+    target.node.parentNode.replaceChild(span, target.node);
+
+    return {
+      placeholder: span,
+      originalText: target.originalText,
+      translationText: target.translationText,
+      translationKey: target.normalized,
+      requestToken: null,
+      originalNode: target.node
+    };
+  }
+
+  function applyInlineResult(inline, data) {
+    if (!inline || !inline.placeholder || !inline.placeholder.isConnected) {
+      return;
+    }
+
+    inline.placeholder.classList.remove(INLINE_LOADING_CLASS);
+
+    const html = data?.translationHtml;
+    const fallback = data?.translation ? escapeHtml(data.translation) : '';
+
+    if (html) {
+      inline.placeholder.innerHTML = html;
+    } else if (fallback) {
+      inline.placeholder.innerHTML = fallback;
+    } else {
+      inline.placeholder.textContent = 'No translation available';
+    }
+
+    inline.translationData = data;
+  }
+
+  function translateInlineTarget(inline) {
+    if (!inline || !inline.placeholder || !inline.placeholder.isConnected) {
+      return;
+    }
+
+    const cacheKey = inline.translationKey;
+
+    inline.placeholder.classList.add(INLINE_LOADING_CLASS);
+    inline.placeholder.textContent = '翻译中...';
+
+    if (translationCache.has(cacheKey)) {
+      applyInlineResult(inline, translationCache.get(cacheKey));
+      return;
+    }
+
+    const token = { cancelled: false };
+    inline.requestToken = token;
+
+    requestSharedTranslation(inline.translationText, cacheKey)
+      .then((data) => {
+        if (token.cancelled) {
+          return;
+        }
+        if (inline.requestToken !== token) {
+          return;
+        }
+        applyInlineResult(inline, data);
+      })
+      .catch((error) => {
+        if (token.cancelled) {
+          return;
+        }
+        if (!inline.placeholder || !inline.placeholder.isConnected) {
+          return;
+        }
+        inline.placeholder.classList.remove(INLINE_LOADING_CLASS);
+        inline.placeholder.textContent = `翻译失败：${error.message || error}`;
+      })
+      .finally(() => {
+        if (inline.requestToken === token) {
+          inline.requestToken = null;
+        }
+      });
+  }
+
+  function processCtrlHover() {
+    ctrlHoverRAF = null;
+    if (!ctrlActive) {
+      return;
+    }
+
+    const event = pendingCtrlEvent;
+    pendingCtrlEvent = null;
+
+    if (!event) {
+      return;
+    }
+
+    const element = document.elementFromPoint(event.clientX, event.clientY);
+    if (currentInline?.placeholder && element && currentInline.placeholder.contains(element)) {
+      return;
+    }
+
+    const target = getInlineTargetFromPoint(event.clientX, event.clientY);
+
+    if (!target) {
+      restoreCurrentInline();
+      return;
+    }
+
+    if (currentInline?.originalNode === target.node) {
+      return;
+    }
+
+    restoreCurrentInline();
+
+    const replacement = createInlineReplacement(target);
+    if (!replacement) {
+      return;
+    }
+
+    currentInline = replacement;
+    translateInlineTarget(currentInline);
+  }
+
+  function handleCtrlMouseMove(event) {
+    if (event.ctrlKey) {
+      if (!ctrlActive) {
+        setCtrlActive(true);
+      }
+    } else if (ctrlActive) {
+      setCtrlActive(false);
+      return;
+    }
+
+    if (!ctrlActive) {
+      return;
+    }
+
+    pendingCtrlEvent = event;
+
+    if (!ctrlHoverRAF) {
+      ctrlHoverRAF = requestAnimationFrame(processCtrlHover);
+    }
+  }
+
+  function setCtrlActive(state) {
+    if (ctrlActive === state) {
+      return;
+    }
+    ctrlActive = state;
+    if (!ctrlActive) {
+      pendingCtrlEvent = null;
+      if (ctrlHoverRAF) {
+        cancelAnimationFrame(ctrlHoverRAF);
+        ctrlHoverRAF = null;
+      }
+      restoreCurrentInline();
+    } else {
+      hideFloatingUI();
+    }
+  }
+
+  function handleCtrlKeyDown(event) {
+    if (event.key === 'Control') {
+      setCtrlActive(true);
+    }
+  }
+
+  function handleCtrlKeyUp(event) {
+    if (event.key === 'Control' || !event.ctrlKey) {
+      setCtrlActive(false);
+    }
   }
 
   function requestTranslation(text) {
@@ -441,6 +755,30 @@
         resolve(response.data);
       });
     });
+  }
+
+  function requestSharedTranslation(text, key) {
+    if (translationCache.has(key)) {
+      return Promise.resolve(translationCache.get(key));
+    }
+
+    if (pendingTranslations.has(key)) {
+      return pendingTranslations.get(key);
+    }
+
+    const promise = requestTranslation(text)
+      .then((data) => {
+        translationCache.set(key, data);
+        pendingTranslations.delete(key);
+        return data;
+      })
+      .catch((error) => {
+        pendingTranslations.delete(key);
+        throw error;
+      });
+
+    pendingTranslations.set(key, promise);
+    return promise;
   }
 
   function buildTooltipHtml(data) {
@@ -473,21 +811,25 @@
       return;
     }
 
+    const cacheKey = normalizeText(text);
+    if (!cacheKey) {
+      return;
+    }
+
     iconHovered = true;
     showTooltip({ html: '', text: '翻译中...', loading: true });
 
-    if (translationCache.has(text)) {
-      const cached = translationCache.get(text);
+    if (translationCache.has(cacheKey)) {
+      const cached = translationCache.get(cacheKey);
       showTooltip({ html: buildTooltipHtml(cached) });
       return;
     }
 
-    const requestToken = { text };
+    const requestToken = { text, cacheKey };
     activeRequest = requestToken;
 
-    requestTranslation(text)
+    requestSharedTranslation(text, cacheKey)
       .then((data) => {
-        translationCache.set(text, data);
         if (activeRequest !== requestToken) {
           return;
         }
@@ -541,18 +883,17 @@
   }
 
   function handleDocumentMouseDown(event) {
-    if (!floatingIcon) {
-      return;
+    const target = event.target;
+    const insideIcon = floatingIcon && floatingIcon.contains(target);
+    const insideTooltip = floatingTooltip && floatingTooltip.contains(target);
+
+    if (floatingIcon && !insideIcon && !insideTooltip) {
+      hideFloatingUI();
     }
 
-    const target = event.target;
-    if (floatingIcon.contains(target)) {
-      return;
+    if (currentInline?.placeholder && !currentInline.placeholder.contains(target)) {
+      restoreCurrentInline();
     }
-    if (floatingTooltip && floatingTooltip.contains(target)) {
-      return;
-    }
-    hideFloatingUI();
   }
 
   document.addEventListener('selectionchange', () => scheduleSelectionCheck(80));
@@ -569,8 +910,17 @@
     scheduleSelectionCheck(40);
   });
   document.addEventListener('mousedown', handleDocumentMouseDown, true);
+  document.addEventListener('mousemove', handleCtrlMouseMove, true);
+  document.addEventListener('keydown', handleCtrlKeyDown, true);
+  document.addEventListener('keyup', handleCtrlKeyUp, true);
   window.addEventListener('scroll', () => refreshFloatingPosition(), true);
   window.addEventListener('resize', () => refreshFloatingPosition());
+  window.addEventListener('blur', () => setCtrlActive(false));
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      setCtrlActive(false);
+    }
+  });
 
   function removeOverlay() {
     const existing = document.getElementById(OVERLAY_ID);
