@@ -29,10 +29,24 @@ export function wrapWithAnnotations(translation, replacements) {
       continue;
     }
 
-    const pattern = new RegExp(`\\b${escapeRegExp(english)}\\b`, 'g');
-    html = html.replace(pattern, (match) => {
-      const safeEnglish = sanitizeHtml(match);
-      const safeChinese = sanitizeHtml(chinese);
+    const combinedPattern = new RegExp(
+      `${escapeRegExp(english)}\\s*\\(${escapeRegExp(chinese)}\\)`,
+      'g'
+    );
+    const safeEnglish = sanitizeHtml(english);
+    const safeChinese = sanitizeHtml(chinese);
+
+    const replacedHtml = html.replace(combinedPattern, () => {
+      return `<span class="ries-annotated">${safeEnglish}(${safeChinese})</span>`;
+    });
+
+    if (replacedHtml !== html) {
+      html = replacedHtml;
+      continue;
+    }
+
+    const englishPattern = new RegExp(`\\b${escapeRegExp(english)}\\b`, 'g');
+    html = html.replace(englishPattern, () => {
       return `<span class="ries-annotated">${safeEnglish}(${safeChinese})</span>`;
     });
   }

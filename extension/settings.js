@@ -5,7 +5,9 @@ const DEFAULT_SETTINGS = {
   apiPath: '/v1/chat/completions',
   apiKey: '',
   model: 'gpt-4o-mini',
-  temperature: 0.2
+  temperature: 0.2,
+  termTargetCount: 3,
+  termDifficulty: 'intermediate'
 };
 
 export async function getSettings() {

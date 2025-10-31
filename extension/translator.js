@@ -8,16 +8,43 @@ class TranslationError extends Error {
   }
 }
 
-function buildPrompt(text) {
+function resolveTermPreferences(settings) {
+  const parsedCount = Number.parseInt(settings?.termTargetCount, 10);
+  const count = Number.isFinite(parsedCount) ? parsedCount : 3;
+  const boundedCount = Math.min(10, Math.max(1, count));
+  const allowed = new Set(['basic', 'intermediate', 'advanced']);
+  const difficulty = allowed.has(settings?.termDifficulty) ? settings.termDifficulty : 'intermediate';
+  return { count: boundedCount, difficulty };
+}
+
+function buildPrompt(text, settings) {
+  const { count, difficulty } = resolveTermPreferences(settings);
+
+  const difficultyNotes = {
+    basic: '优先选择常见、高频、拼写简单的英文单词，适合大众理解。',
+    intermediate: '挑选商业/科技语境下常用的英文表达，体现专业度但仍容易理解。',
+    advanced: '挑选更具专业性或高阶的英文术语，但需确保语境准确。'
+  };
+
+  const systemContent = `你是一名中英双语的本地化编辑，需要保持中文句式，只把大约 ${count} 个关键术语换成英文。遵守以下规则：
+1. 只替换最重要的名词或短语，整体句子仍保持中文表达。
+2. 每个被替换的术语用英文单词直接出现在句子里，并紧跟原始中文，格式形如 Growth(增长)。
+3. ${difficultyNotes[difficulty]}
+4. 理想情况下替换 ${count} 个不同的术语；若文本适合的术语不足，替换尽可能多但不少于 1 个。
+5. 返回严格的 JSON：{"translation":"混合文本","replacements":[{"english":"Term","chinese":"原词"},...]}
+6. replacements 数组中的条目与实际替换完全一致，英文大小写需与 translation 中保持一致。
+7. 不要输出额外解释或 Markdown，仅输出 JSON。`;
+
+  const userContent = `待处理文本：\n${text}`;
+
   return [
     {
       role: 'system',
-      content:
-        'You are an expert bilingual translator specialising in business, marketing, and startup terminology. Translate the provided Chinese text into natural, fluent English. Identify key domain-specific nouns, company names, and marketing concepts, and map them to concise English terminology. Return a minified JSON object with keys "translation" and "replacements". The translation string MUST contain the exact English terms that appear in the replacements list. The replacements value must be an array of objects of the form {"english":"term","chinese":"原词"}. Respond with JSON only.'
+      content: systemContent
     },
     {
       role: 'user',
-      content: text
+      content: userContent
     }
   ];
 }
@@ -26,7 +53,7 @@ async function callChatCompletion(text, settings) {
   const body = {
     model: settings.model,
     temperature: settings.temperature,
-    messages: buildPrompt(text)
+    messages: buildPrompt(text, settings)
   };
 
   const response = await fetch(`${settings.apiBaseUrl.replace(/\/$/, '')}${settings.apiPath}`, {
