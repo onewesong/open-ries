@@ -1,5 +1,15 @@
 (function () {
   const OVERLAY_ID = 'ries-translation-overlay';
+  const ICON_ID = 'ries-selection-icon';
+  const TOOLTIP_ID = 'ries-selection-tooltip';
+
+  let floatingIcon = null;
+  let floatingTooltip = null;
+  let hideTooltipTimer = null;
+  let currentSelectionText = '';
+  let activeRequest = null;
+  let iconHovered = false;
+  const translationCache = new Map();
 
   function ensureStyles() {
     if (document.getElementById('ries-translation-style')) {
@@ -78,10 +88,489 @@
         font-style: italic;
         margin-top: 8px;
       }
+
+      #${ICON_ID} {
+        position: absolute;
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, #4c6ef5, #82aaff);
+        color: #f8fafc;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 8px 18px rgba(15, 23, 42, 0.3);
+        cursor: pointer;
+        z-index: 2147483647;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+        font-family: 'Inter', 'SF Pro Display', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        font-weight: 600;
+        font-size: 16px;
+      }
+
+      #${ICON_ID}:hover {
+        transform: scale(1.05);
+        box-shadow: 0 10px 24px rgba(30, 64, 175, 0.35);
+      }
+
+      #${TOOLTIP_ID} {
+        position: absolute;
+        max-width: min(360px, calc(100vw - 32px));
+        background: #0f172a;
+        color: #e2e8f0;
+        border-radius: 12px;
+        padding: 14px 16px;
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.45);
+        font-size: 14px;
+        line-height: 1.5;
+        display: none;
+        z-index: 2147483647;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+      }
+
+      #${TOOLTIP_ID} strong {
+        color: #cbd5f5;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        font-size: 12px;
+        display: block;
+        margin-bottom: 6px;
+      }
+
+      #${TOOLTIP_ID} .ries-annotated {
+        text-decoration: underline;
+        text-decoration-style: dashed;
+        text-decoration-color: rgba(148, 163, 184, 0.55);
+        font-weight: 600;
+      }
+
+      #${TOOLTIP_ID} .ries-tooltip-body {
+        margin-top: 6px;
+        color: #e2e8f0;
+        word-break: break-word;
+      }
+
+      #${TOOLTIP_ID} .ries-tooltip-terms {
+        margin-top: 10px;
+        font-size: 12px;
+        color: #94a3b8;
+        display: grid;
+        gap: 4px;
+      }
+
+      #${TOOLTIP_ID} .ries-tooltip-terms span {
+        display: block;
+      }
+
+      #${TOOLTIP_ID}.ries-loading::after {
+        content: 'Translating...';
+        display: block;
+        color: #94a3b8;
+        font-style: italic;
+        margin-top: 6px;
+      }
     `;
 
     document.head.appendChild(style);
   }
+
+  function isWithinWidget(node) {
+    let current = node;
+    while (current) {
+      if (current.nodeType === Node.ELEMENT_NODE) {
+        if (current.id === ICON_ID || current.id === TOOLTIP_ID || current.id === OVERLAY_ID) {
+          return true;
+        }
+      }
+      current = current.parentNode;
+    }
+    return false;
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (char) => {
+      switch (char) {
+        case '&':
+          return '&amp;';
+        case '<':
+          return '&lt;';
+        case '>':
+          return '&gt;';
+        case '"':
+          return '&quot;';
+        case "'":
+          return '&#39;';
+        default:
+          return char;
+      }
+    });
+  }
+
+  function ensureIcon() {
+    if (floatingIcon && floatingIcon.isConnected) {
+      return floatingIcon;
+    }
+
+    floatingIcon = document.createElement('button');
+    floatingIcon.id = ICON_ID;
+    floatingIcon.type = 'button';
+    floatingIcon.textContent = 'R';
+    floatingIcon.setAttribute('aria-label', 'Translate selection');
+    floatingIcon.addEventListener('mouseenter', handleIconMouseEnter);
+    floatingIcon.addEventListener('mouseleave', handleIconMouseLeave);
+    document.body.appendChild(floatingIcon);
+
+    return floatingIcon;
+  }
+
+  function ensureTooltip() {
+    if (floatingTooltip && floatingTooltip.isConnected) {
+      return floatingTooltip;
+    }
+
+    floatingTooltip = document.createElement('div');
+    floatingTooltip.id = TOOLTIP_ID;
+    floatingTooltip.addEventListener('mouseenter', () => {
+      if (hideTooltipTimer) {
+        clearTimeout(hideTooltipTimer);
+        hideTooltipTimer = null;
+      }
+    });
+    floatingTooltip.addEventListener('mouseleave', () => {
+      hideTooltip();
+    });
+    document.body.appendChild(floatingTooltip);
+
+    return floatingTooltip;
+  }
+
+  function hideTooltip(delay = 120) {
+    if (!floatingTooltip) {
+      return;
+    }
+    if (hideTooltipTimer) {
+      clearTimeout(hideTooltipTimer);
+    }
+
+    if (delay <= 0) {
+      hideTooltipTimer = null;
+      floatingTooltip.style.display = 'none';
+      floatingTooltip.classList.remove('ries-loading');
+      floatingTooltip.innerHTML = '';
+      return;
+    }
+
+    hideTooltipTimer = setTimeout(() => {
+      if (floatingTooltip) {
+        floatingTooltip.style.display = 'none';
+        floatingTooltip.classList.remove('ries-loading');
+        floatingTooltip.innerHTML = '';
+      }
+      hideTooltipTimer = null;
+    }, delay);
+  }
+
+  function showTooltip({ title = 'Ries Translate', html, text, loading = false }) {
+    ensureStyles();
+    const tooltip = ensureTooltip();
+    if (hideTooltipTimer) {
+      clearTimeout(hideTooltipTimer);
+      hideTooltipTimer = null;
+    }
+
+    tooltip.classList.toggle('ries-loading', loading);
+
+    const header = `<strong>${title}</strong>`;
+    const bodyContent = html ? html : text || '';
+    tooltip.innerHTML = `${header}<div class="ries-tooltip-body">${bodyContent}</div>`;
+    tooltip.style.display = 'block';
+
+    positionTooltip();
+  }
+
+  function positionTooltip() {
+    if (!floatingIcon || !floatingTooltip) {
+      return;
+    }
+
+    const iconRect = floatingIcon.getBoundingClientRect();
+    const tooltipRect = floatingTooltip.getBoundingClientRect();
+    const scrollY = window.scrollY || window.pageYOffset;
+    const scrollX = window.scrollX || window.pageXOffset;
+
+    let top = scrollY + iconRect.top - 6;
+    let left = scrollX + iconRect.right + 12;
+
+    const viewportRight = scrollX + window.innerWidth;
+    if (left + tooltipRect.width > viewportRight - 8) {
+      left = scrollX + iconRect.left - tooltipRect.width - 12;
+    }
+
+    const minTop = scrollY + 8;
+    const maxTop = scrollY + window.innerHeight - tooltipRect.height - 8;
+    top = clamp(top, minTop, maxTop);
+
+    floatingTooltip.style.top = `${top}px`;
+    floatingTooltip.style.left = `${left}px`;
+  }
+
+  function hideFloatingUI() {
+    if (hideTooltipTimer) {
+      clearTimeout(hideTooltipTimer);
+      hideTooltipTimer = null;
+    }
+    if (floatingIcon) {
+      floatingIcon.removeEventListener('mouseenter', handleIconMouseEnter);
+      floatingIcon.removeEventListener('mouseleave', handleIconMouseLeave);
+      floatingIcon.remove();
+      floatingIcon = null;
+    }
+    if (floatingTooltip) {
+      floatingTooltip.remove();
+      floatingTooltip = null;
+    }
+    currentSelectionText = '';
+    activeRequest = null;
+    iconHovered = false;
+  }
+
+  function updateIconPosition(rect) {
+    if (!floatingIcon) {
+      return;
+    }
+
+    const iconSize = 32;
+    const offset = 10;
+    const scrollY = window.scrollY || window.pageYOffset;
+    const scrollX = window.scrollX || window.pageXOffset;
+
+    let top = scrollY + rect.top - iconSize - offset;
+    let left = scrollX + rect.left + rect.width / 2 - iconSize / 2;
+
+    const minTop = scrollY + 8;
+    const maxTop = scrollY + window.innerHeight - iconSize - 8;
+    const minLeft = scrollX + 8;
+    const maxLeft = scrollX + window.innerWidth - iconSize - 8;
+
+    top = clamp(top, minTop, maxTop);
+    left = clamp(left, minLeft, maxLeft);
+
+    floatingIcon.style.top = `${top}px`;
+    floatingIcon.style.left = `${left}px`;
+    floatingIcon.style.display = 'flex';
+  }
+
+  function showSelectionIcon(rect, text) {
+    ensureStyles();
+    const icon = ensureIcon();
+    icon.dataset.selectionText = text;
+    currentSelectionText = text;
+    updateIconPosition(rect);
+  }
+
+  function getSelectionDetails() {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) {
+      return null;
+    }
+
+    if (isWithinWidget(selection.anchorNode) || isWithinWidget(selection.focusNode)) {
+      return null;
+    }
+
+    const text = selection.toString().trim();
+    if (!text) {
+      return null;
+    }
+
+    let range;
+    try {
+      range = selection.getRangeAt(0).cloneRange();
+    } catch (error) {
+      return null;
+    }
+
+    let rect = range.getBoundingClientRect();
+    if (!rect || (!rect.width && !rect.height)) {
+      const rects = range.getClientRects();
+      if (!rects.length) {
+        return null;
+      }
+      rect = Array.from(rects).find((r) => r.width && r.height) || rects[0];
+    }
+
+    if (!rect || (!rect.width && !rect.height)) {
+      return null;
+    }
+
+    return { text, rect };
+  }
+
+  let selectionCheckTimeout = null;
+
+  function scheduleSelectionCheck(delay = 24) {
+    if (selectionCheckTimeout) {
+      clearTimeout(selectionCheckTimeout);
+    }
+    selectionCheckTimeout = setTimeout(() => {
+      selectionCheckTimeout = null;
+      const details = getSelectionDetails();
+      if (!details) {
+        hideFloatingUI();
+        return;
+      }
+      showSelectionIcon(details.rect, details.text);
+    }, delay);
+  }
+
+  function requestTranslation(text) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ type: 'RIES_TRANSLATE_TEXT', text }, (response) => {
+        if (!response) {
+          reject(new Error('No response from background script.'));
+          return;
+        }
+        if (!response.ok) {
+          reject(new Error(response.error || 'Translation failed.'));
+          return;
+        }
+        resolve(response.data);
+      });
+    });
+  }
+
+  function buildTooltipHtml(data) {
+    const translationHtml = data.translationHtml || (data.translation ? escapeHtml(data.translation) : '');
+    const replacements = Array.isArray(data.replacements) ? data.replacements : [];
+    if (!replacements.length) {
+      return translationHtml;
+    }
+
+    const items = replacements
+      .slice(0, 6)
+      .map((item) => {
+        const cn = escapeHtml(item.chinese ?? '');
+        const en = escapeHtml(item.english ?? '');
+        return `<span>${cn} &rarr; ${en}</span>`;
+      })
+      .join('');
+
+    const more = replacements.length > 6 ? `<span>... ${replacements.length - 6} more</span>` : '';
+    return `${translationHtml}<div class="ries-tooltip-terms">${items}${more}</div>`;
+  }
+
+  function handleIconMouseEnter() {
+    if (!floatingIcon) {
+      return;
+    }
+
+    const text = floatingIcon.dataset.selectionText;
+    if (!text) {
+      return;
+    }
+
+    iconHovered = true;
+    showTooltip({ html: '', text: '翻译中...', loading: true });
+
+    if (translationCache.has(text)) {
+      const cached = translationCache.get(text);
+      showTooltip({ html: buildTooltipHtml(cached) });
+      return;
+    }
+
+    const requestToken = { text };
+    activeRequest = requestToken;
+
+    requestTranslation(text)
+      .then((data) => {
+        translationCache.set(text, data);
+        if (activeRequest !== requestToken) {
+          return;
+        }
+        if (currentSelectionText !== text) {
+          return;
+        }
+        if (!iconHovered) {
+          return;
+        }
+        showTooltip({ html: buildTooltipHtml(data) });
+      })
+      .catch((error) => {
+        if (activeRequest !== requestToken) {
+          return;
+        }
+        if (currentSelectionText !== text) {
+          return;
+        }
+        if (!iconHovered) {
+          return;
+        }
+        showTooltip({ text: `翻译失败：${error.message || error}` });
+      })
+      .finally(() => {
+        if (activeRequest === requestToken) {
+          activeRequest = null;
+        }
+      });
+  }
+
+  function handleIconMouseLeave() {
+    iconHovered = false;
+    hideTooltip();
+  }
+
+  function refreshFloatingPosition() {
+    if (!floatingIcon) {
+      return;
+    }
+
+    const details = getSelectionDetails();
+    if (!details) {
+      hideFloatingUI();
+      return;
+    }
+
+    updateIconPosition(details.rect);
+    if (floatingTooltip && floatingTooltip.style.display === 'block') {
+      positionTooltip();
+    }
+  }
+
+  function handleDocumentMouseDown(event) {
+    if (!floatingIcon) {
+      return;
+    }
+
+    const target = event.target;
+    if (floatingIcon.contains(target)) {
+      return;
+    }
+    if (floatingTooltip && floatingTooltip.contains(target)) {
+      return;
+    }
+    hideFloatingUI();
+  }
+
+  document.addEventListener('selectionchange', () => scheduleSelectionCheck(80));
+  document.addEventListener('mouseup', () => scheduleSelectionCheck(20));
+  document.addEventListener('keyup', (event) => {
+    if (event.key === 'Escape') {
+      hideFloatingUI();
+      const selection = window.getSelection();
+      if (selection) {
+        selection.removeAllRanges();
+      }
+      return;
+    }
+    scheduleSelectionCheck(40);
+  });
+  document.addEventListener('mousedown', handleDocumentMouseDown, true);
+  window.addEventListener('scroll', () => refreshFloatingPosition(), true);
+  window.addEventListener('resize', () => refreshFloatingPosition());
 
   function removeOverlay() {
     const existing = document.getElementById(OVERLAY_ID);

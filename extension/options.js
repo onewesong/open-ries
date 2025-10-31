@@ -7,6 +7,7 @@ const apiKeyInput = document.getElementById('api-key');
 const modelInput = document.getElementById('model');
 const temperatureInput = document.getElementById('temperature');
 const status = document.getElementById('status');
+const translateSelectionBtn = document.getElementById('translate-selection');
 
 let originalSettings = null;
 
@@ -94,3 +95,107 @@ hydrate().catch((error) => {
   console.error('Failed to load settings', error);
   status.textContent = 'Failed to load settings. Check the console.';
 });
+
+// -------- Translate selection on current tab and show overlay --------
+
+function queryPreferredTab() {
+  return new Promise((resolve) => {
+    chrome.tabs.query({ currentWindow: true }, (tabs) => {
+      // Prefer active http(s) tab; otherwise pick the first http(s) tab
+      const isHttp = (url) => typeof url === 'string' && /^https?:\/\//.test(url);
+      const activeHttp = tabs.find((t) => t.active && isHttp(t.url));
+      if (activeHttp) return resolve(activeHttp);
+      const anyHttp = tabs.find((t) => isHttp(t.url));
+      resolve(anyHttp || tabs[0]);
+    });
+  });
+}
+
+function executeOnTab(tabId, func) {
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.scripting.executeScript({ target: { tabId }, func }, (results) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        resolve(results);
+      });
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function sendToTab(tabId, message) {
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.sendMessage(tabId, message, () => resolve());
+    } catch (_) {
+      resolve();
+    }
+  });
+}
+
+function requestTranslation(text) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: 'RIES_TRANSLATE_TEXT', text }, (response) => {
+      if (!response) {
+        reject(new Error('No response from background script.'));
+      } else if (!response.ok) {
+        reject(new Error(response.error || 'Translation failed.'));
+      } else {
+        resolve(response.data);
+      }
+    });
+  });
+}
+
+async function handleTranslateSelection() {
+  try {
+    status.textContent = 'Reading selection from current tab…';
+    const tab = await queryPreferredTab();
+    if (!tab?.id) {
+      status.textContent = 'No active tab found.';
+      return;
+    }
+
+    const results = await executeOnTab(tab.id, () => (window.getSelection()?.toString() || '').trim());
+    const selectedText = (results && results[0] && results[0].result) ? String(results[0].result) : '';
+
+    if (!selectedText) {
+      status.textContent = '请先在当前页选中文本，然后再点击翻译。';
+      return;
+    }
+
+    await sendToTab(tab.id, { type: 'RIES_TRANSLATION_STARTED' });
+    status.textContent = 'Translating selection…';
+
+    try {
+      const data = await requestTranslation(selectedText);
+      await sendToTab(tab.id, {
+        type: 'RIES_TRANSLATION_RESULT',
+        payload: {
+          sourceText: selectedText,
+          translationHtml: data.translationHtml,
+          rawTranslation: data.translation,
+          replacements: data.replacements || []
+        }
+      });
+      status.textContent = '翻译结果已显示在当前页右下角。';
+    } catch (e) {
+      await sendToTab(tab.id, {
+        type: 'RIES_TRANSLATION_ERROR',
+        payload: { message: e.message || 'Translation failed.' }
+      });
+      status.textContent = `翻译失败：${e.message || e}`;
+    }
+  } catch (err) {
+    console.error('Translate selection flow failed', err);
+    status.textContent = `操作失败：${err.message || err}`;
+  }
+}
+
+if (translateSelectionBtn) {
+  translateSelectionBtn.addEventListener('click', handleTranslateSelection);
+}
