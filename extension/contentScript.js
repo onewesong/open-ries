@@ -189,8 +189,8 @@
       }
 
       .${INLINE_CLASS}.${INLINE_LOADING_CLASS} {
-        background: rgba(148, 163, 184, 0.2);
-        color: #94a3b8;
+        animation: ries-inline-blink 1s ease-in-out infinite;
+        color: inherit;
       }
 
       .${INLINE_CLASS} .ries-annotated {
@@ -198,6 +198,18 @@
         text-decoration-style: dashed;
         text-decoration-color: rgba(148, 163, 184, 0.55);
         font-weight: 600;
+      }
+
+      @keyframes ries-inline-blink {
+        0% {
+          background: rgba(76, 110, 245, 0.18);
+        }
+        50% {
+          background: rgba(148, 163, 184, 0.22);
+        }
+        100% {
+          background: rgba(76, 110, 245, 0.18);
+        }
       }
     `;
 
@@ -571,7 +583,7 @@
     const span = document.createElement('span');
     span.className = `${INLINE_CLASS} ${INLINE_LOADING_CLASS}`;
     span.setAttribute('data-ries-inline', 'true');
-    span.textContent = '翻译中...';
+    span.textContent = target.originalText;
 
     target.node.parentNode.replaceChild(span, target.node);
 
@@ -614,7 +626,6 @@
     const cacheKey = inline.translationKey;
 
     inline.placeholder.classList.add(INLINE_LOADING_CLASS);
-    inline.placeholder.textContent = '翻译中...';
 
     if (translationCache.has(cacheKey)) {
       applyInlineResult(inline, translationCache.get(cacheKey));
