@@ -849,10 +849,11 @@
 
     const html = data?.translationHtml;
     const fallback = data?.translation ? escapeHtml(data.translation) : '';
+    const showInline = displayTranslations || !inline.isAuto;
 
     inline.translationData = data;
 
-    if (!displayTranslations) {
+    if (!showInline) {
       inline.placeholder.textContent = inline.originalText;
       return;
     }
@@ -876,17 +877,18 @@
 
     const cacheKey = inline.translationKey;
     const namespacedKey = getNamespacedKey(cacheKey);
+    const showInline = displayTranslations || !inline.isAuto;
 
     inline.placeholder.classList.add(INLINE_LOADING_CLASS);
 
-    if (!displayTranslations) {
+    if (!currentSettings.apiKey) {
       inline.placeholder.classList.remove(INLINE_LOADING_CLASS);
       inline.placeholder.textContent = inline.originalText;
       inline.translationData = null;
       return;
     }
 
-    if (!currentSettings.apiKey) {
+    if (!showInline) {
       inline.placeholder.classList.remove(INLINE_LOADING_CLASS);
       inline.placeholder.textContent = inline.originalText;
       inline.translationData = null;
@@ -940,7 +942,7 @@
       return;
     }
 
-    if (!displayTranslations) {
+    if (!currentSettings.apiKey) {
       clearCurrentInline({ revert: true });
       pendingCtrlEvent = null;
       return;
@@ -989,12 +991,12 @@
       return;
     }
 
-    if (!displayTranslations || !currentSettings.apiKey) {
-      clearCurrentInline({ revert: true });
+    if (!ctrlActive) {
       return;
     }
 
-    if (!ctrlActive) {
+    if (!currentSettings.apiKey) {
+      clearCurrentInline({ revert: true });
       return;
     }
 
