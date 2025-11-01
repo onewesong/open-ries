@@ -7,6 +7,8 @@
   const INLINE_MAX_LENGTH = 400;
   const SETTINGS_KEY = 'ries-translator-settings';
 
+  const ENABLE_SELECTION_ICON = false;
+
   const DEFAULT_SETTINGS = {
     showTranslations: true,
     termTargetCount: 3,
@@ -585,6 +587,9 @@
   }
 
   function showSelectionIcon(rect, text) {
+    if (!ENABLE_SELECTION_ICON) {
+      return;
+    }
     ensureStyles();
     const icon = ensureIcon();
     icon.dataset.selectionText = text;
@@ -637,6 +642,10 @@
       clearTimeout(selectionCheckTimeout);
     }
     if (ctrlActive) {
+      hideFloatingUI();
+      return;
+    }
+    if (!ENABLE_SELECTION_ICON) {
       hideFloatingUI();
       return;
     }
