@@ -6,8 +6,6 @@ const apiPathInput = document.getElementById('api-path');
 const apiKeyInput = document.getElementById('api-key');
 const modelInput = document.getElementById('model');
 const temperatureInput = document.getElementById('temperature');
-const termCountInput = document.getElementById('term-count');
-const termDifficultyInput = document.getElementById('term-difficulty');
 const status = document.getElementById('status');
 const translateSelectionBtn = document.getElementById('translate-selection');
 
@@ -55,8 +53,6 @@ async function hydrate() {
   apiKeyInput.value = settings.apiKey;
   modelInput.value = settings.model;
   temperatureInput.value = settings.temperature;
-  termCountInput.value = settings.termTargetCount;
-  termDifficultyInput.value = settings.termDifficulty;
 }
 
 form.addEventListener('submit', async (event) => {
@@ -64,22 +60,16 @@ form.addEventListener('submit', async (event) => {
   status.textContent = 'Saving…';
 
   try {
-    const parsedTermCount = Number.parseInt(termCountInput.value, 10);
-    const termTargetCount = Number.isFinite(parsedTermCount) ? parsedTermCount : 3;
-    const boundedTermCount = Math.min(10, Math.max(1, termTargetCount));
-    const allowedDifficulties = new Set(['basic', 'intermediate', 'advanced']);
-    const termDifficulty = allowedDifficulties.has(termDifficultyInput.value)
-      ? termDifficultyInput.value
-      : 'intermediate';
-
+    const latestSettings = await getSettings();
     const settings = await saveSettings({
       apiBaseUrl: apiBaseInput.value.trim(),
       apiPath: apiPathInput.value.trim() || '/v1/chat/completions',
       apiKey: apiKeyInput.value.trim(),
       model: modelInput.value.trim(),
       temperature: Number.parseFloat(temperatureInput.value) || 0.2,
-      termTargetCount: boundedTermCount,
-      termDifficulty
+      termTargetCount: latestSettings.termTargetCount,
+      termDifficulty: latestSettings.termDifficulty,
+      showTranslations: latestSettings.showTranslations
     });
 
     // Saved message

@@ -5,6 +5,18 @@
   const INLINE_CLASS = 'ries-inline-translation';
   const INLINE_LOADING_CLASS = 'ries-inline-loading';
   const INLINE_MAX_LENGTH = 400;
+  const SETTINGS_KEY = 'ries-translator-settings';
+
+  const DEFAULT_SETTINGS = {
+    showTranslations: true,
+    termTargetCount: 3,
+    termDifficulty: 'intermediate',
+    model: 'gpt-4o-mini',
+    apiKey: '',
+    apiBaseUrl: 'https://api.openai.com',
+    apiPath: '/v1/chat/completions',
+    temperature: 0.2
+  };
 
   let floatingIcon = null;
   let floatingTooltip = null;
@@ -14,6 +26,13 @@
   let iconHovered = false;
   const translationCache = new Map();
   const pendingTranslations = new Map();
+  const autoInlines = new Set();
+  let autoGeneration = 0;
+  let autoAppliedOnce = false;
+
+  let currentSettings = { ...DEFAULT_SETTINGS };
+  let displayTranslations = true;
+  let cacheKeyPrefix = computeCacheKeyPrefix(currentSettings);
 
   let ctrlActive = false;
   let currentInline = null;
@@ -216,6 +235,79 @@
     document.head.appendChild(style);
   }
 
+  function computeCacheKeyPrefix(settings) {
+    const count = Number.isFinite(Number.parseInt(settings?.termTargetCount, 10))
+      ? Number.parseInt(settings.termTargetCount, 10)
+      : 3;
+    const difficulty = typeof settings?.termDifficulty === 'string' ? settings.termDifficulty : 'intermediate';
+    const model = settings?.model || '';
+    const temperature = Number.isFinite(Number(settings?.temperature)) ? Number(settings.temperature).toFixed(2) : '0.20';
+    const baseUrl = settings?.apiBaseUrl || '';
+    const apiPath = settings?.apiPath || '';
+    return `${count}|${difficulty}|${model}|${temperature}|${baseUrl}|${apiPath}`;
+  }
+
+  function getNamespacedKey(key) {
+    return `${cacheKeyPrefix}::${key}`;
+  }
+
+  function applySettings(rawSettings) {
+    const merged = { ...DEFAULT_SETTINGS, ...(rawSettings || {}) };
+    const previousDisplay = displayTranslations;
+    const previousCacheKey = cacheKeyPrefix;
+
+    currentSettings = merged;
+    displayTranslations = merged.showTranslations !== false;
+    cacheKeyPrefix = computeCacheKeyPrefix(merged);
+
+    const cacheChanged = cacheKeyPrefix !== previousCacheKey;
+    if (cacheChanged) {
+      translationCache.clear();
+      pendingTranslations.clear();
+    }
+
+    const hasApiKey = Boolean(merged.apiKey);
+
+    if (!displayTranslations || !hasApiKey) {
+      clearCurrentInline({ revert: true });
+      revertAutoTranslations();
+      revertInlineSpans();
+      removeOverlay();
+      autoAppliedOnce = false;
+      return;
+    }
+
+    if (cacheChanged) {
+      revertInlineSpans();
+    }
+
+    if (!previousDisplay || cacheChanged || !autoAppliedOnce) {
+      applyAutoTranslations();
+      autoAppliedOnce = true;
+    }
+  }
+
+  function hydrateSettings() {
+    try {
+      chrome.storage.sync.get(SETTINGS_KEY, (items) => {
+        if (chrome.runtime.lastError) {
+          console.warn('Failed to read Ries settings', chrome.runtime.lastError);
+          return;
+        }
+        applySettings(items?.[SETTINGS_KEY]);
+      });
+    } catch (error) {
+      console.warn('Failed to hydrate Ries settings', error);
+    }
+  }
+
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'sync' || !changes[SETTINGS_KEY]) {
+      return;
+    }
+    applySettings(changes[SETTINGS_KEY].newValue);
+  });
+
   function isWithinWidget(node) {
     let current = node;
     while (current) {
@@ -255,6 +347,10 @@
           return char;
       }
     });
+  }
+
+  function sanitizeHtml(value) {
+    return escapeHtml(value);
   }
 
   function normalizeText(value) {
@@ -555,6 +651,139 @@
     }, delay);
   }
 
+  const MAX_AUTO_TARGETS = 120;
+
+  function collectAutoTargets() {
+    const targets = [];
+    if (!document?.body) {
+      return targets;
+    }
+
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!node || !node.parentElement) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        if (isWithinWidget(node.parentElement) || isDisallowedTarget(node.parentElement)) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        const text = node.textContent;
+        if (!text) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        if (!/[\u4e00-\u9fff]/.test(text)) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        const trimmed = text.trim();
+        if (!trimmed || trimmed.length < 2) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        const normalized = normalizeText(trimmed);
+        if (!normalized || normalized.length === 0 || normalized.length > INLINE_MAX_LENGTH) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+
+    let node;
+    while ((node = walker.nextNode())) {
+      if (targets.length >= MAX_AUTO_TARGETS) {
+        break;
+      }
+      const originalText = node.textContent;
+      const trimmed = originalText.trim();
+      const normalized = normalizeText(trimmed);
+      if (!normalized) {
+        continue;
+      }
+
+      targets.push({
+        node,
+        parentElement: node.parentElement,
+        originalText,
+        normalized,
+        translationText: trimmed
+      });
+    }
+
+    return targets;
+  }
+
+  function revertAutoTranslations() {
+    if (!autoInlines.size) {
+      return;
+    }
+
+    autoGeneration += 1;
+
+    for (const inline of Array.from(autoInlines)) {
+      autoInlines.delete(inline);
+      if (inline.requestToken) {
+        inline.requestToken.cancelled = true;
+      }
+      const placeholder = inline.placeholder;
+      if (placeholder && placeholder.isConnected) {
+        const original = inline.originalText ?? placeholder.dataset.riesOriginal ?? '';
+        placeholder.replaceWith(document.createTextNode(original));
+      }
+    }
+  }
+
+  function revertInlineSpans() {
+    const nodes = document.querySelectorAll(`.${INLINE_CLASS}`);
+    for (const node of nodes) {
+      if (!(node instanceof HTMLElement)) {
+        continue;
+      }
+      const original = node.dataset?.riesOriginal;
+      if (original === undefined) {
+        continue;
+      }
+      if (!node.isConnected) {
+        continue;
+      }
+      node.replaceWith(document.createTextNode(original));
+    }
+  }
+
+  function applyAutoTranslations() {
+    if (!displayTranslations || !currentSettings.apiKey) {
+      return;
+    }
+
+    revertAutoTranslations();
+
+    const targets = collectAutoTargets();
+    if (!targets.length) {
+      return;
+    }
+
+    const generation = ++autoGeneration;
+    let index = 0;
+
+    const processNext = () => {
+      if (!displayTranslations || generation !== autoGeneration) {
+        return;
+      }
+      const target = targets[index++];
+      if (!target) {
+        return;
+      }
+
+      const replacement = createInlineReplacement(target, { trackAuto: true, generation });
+      if (replacement) {
+        translateInlineTarget(replacement);
+      }
+
+      if (index < targets.length) {
+        setTimeout(processNext, 60);
+      }
+    };
+
+    processNext();
+  }
+
   function clearCurrentInline({ revert = true } = {}) {
     if (!currentInline) {
       return;
@@ -573,7 +802,7 @@
     currentInline = null;
   }
 
-  function createInlineReplacement(target) {
+  function createInlineReplacement(target, options = {}) {
     if (!target?.node?.parentNode) {
       return null;
     }
@@ -583,18 +812,32 @@
     const span = document.createElement('span');
     span.className = `${INLINE_CLASS} ${INLINE_LOADING_CLASS}`;
     span.setAttribute('data-ries-inline', 'true');
+    span.dataset.riesOriginal = target.originalText;
     span.textContent = target.originalText;
 
     target.node.parentNode.replaceChild(span, target.node);
 
-    return {
+    const leadingWhitespace = target.originalText.match(/^\s*/)?.[0] || '';
+    const trailingWhitespace = target.originalText.match(/\s*$/)?.[0] || '';
+
+    const inline = {
       placeholder: span,
       originalText: target.originalText,
       translationText: target.translationText,
       translationKey: target.normalized,
       requestToken: null,
-      originalNode: target.node
+      originalNode: target.node,
+      leadingWhitespace,
+      trailingWhitespace,
+      isAuto: Boolean(options.trackAuto),
+      autoGeneration: options.generation || 0
     };
+
+    if (inline.isAuto) {
+      autoInlines.add(inline);
+    }
+
+    return inline;
   }
 
   function applyInlineResult(inline, data) {
@@ -607,15 +850,23 @@
     const html = data?.translationHtml;
     const fallback = data?.translation ? escapeHtml(data.translation) : '';
 
-    if (html) {
-      inline.placeholder.innerHTML = html;
-    } else if (fallback) {
-      inline.placeholder.innerHTML = fallback;
-    } else {
-      inline.placeholder.textContent = 'No translation available';
+    inline.translationData = data;
+
+    if (!displayTranslations) {
+      inline.placeholder.textContent = inline.originalText;
+      return;
     }
 
-    inline.translationData = data;
+    const leading = inline.leadingWhitespace ? sanitizeHtml(inline.leadingWhitespace) : '';
+    const trailing = inline.trailingWhitespace ? sanitizeHtml(inline.trailingWhitespace) : '';
+
+    if (html) {
+      inline.placeholder.innerHTML = `${leading}${html}${trailing}`;
+    } else if (fallback) {
+      inline.placeholder.innerHTML = `${leading}${fallback}${trailing}`;
+    } else {
+      inline.placeholder.innerHTML = `${leading}${sanitizeHtml(inline.originalText)}${trailing}`;
+    }
   }
 
   function translateInlineTarget(inline) {
@@ -624,11 +875,26 @@
     }
 
     const cacheKey = inline.translationKey;
+    const namespacedKey = getNamespacedKey(cacheKey);
 
     inline.placeholder.classList.add(INLINE_LOADING_CLASS);
 
-    if (translationCache.has(cacheKey)) {
-      applyInlineResult(inline, translationCache.get(cacheKey));
+    if (!displayTranslations) {
+      inline.placeholder.classList.remove(INLINE_LOADING_CLASS);
+      inline.placeholder.textContent = inline.originalText;
+      inline.translationData = null;
+      return;
+    }
+
+    if (!currentSettings.apiKey) {
+      inline.placeholder.classList.remove(INLINE_LOADING_CLASS);
+      inline.placeholder.textContent = inline.originalText;
+      inline.translationData = null;
+      return;
+    }
+
+    if (translationCache.has(namespacedKey)) {
+      applyInlineResult(inline, translationCache.get(namespacedKey));
       return;
     }
 
@@ -643,6 +909,9 @@
         if (inline.requestToken !== token) {
           return;
         }
+        if (inline.isAuto && inline.autoGeneration !== autoGeneration) {
+          return;
+        }
         applyInlineResult(inline, data);
       })
       .catch((error) => {
@@ -650,6 +919,9 @@
           return;
         }
         if (!inline.placeholder || !inline.placeholder.isConnected) {
+          return;
+        }
+        if (inline.isAuto && inline.autoGeneration !== autoGeneration) {
           return;
         }
         inline.placeholder.classList.remove(INLINE_LOADING_CLASS);
@@ -665,6 +937,12 @@
   function processCtrlHover() {
     ctrlHoverRAF = null;
     if (!ctrlActive) {
+      return;
+    }
+
+    if (!displayTranslations) {
+      clearCurrentInline({ revert: true });
+      pendingCtrlEvent = null;
       return;
     }
 
@@ -711,6 +989,11 @@
       return;
     }
 
+    if (!displayTranslations || !currentSettings.apiKey) {
+      clearCurrentInline({ revert: true });
+      return;
+    }
+
     if (!ctrlActive) {
       return;
     }
@@ -733,7 +1016,7 @@
         cancelAnimationFrame(ctrlHoverRAF);
         ctrlHoverRAF = null;
       }
-      clearCurrentInline({ revert: false });
+      clearCurrentInline({ revert: !displayTranslations });
     } else {
       hideFloatingUI();
     }
@@ -768,26 +1051,28 @@
   }
 
   function requestSharedTranslation(text, key) {
-    if (translationCache.has(key)) {
-      return Promise.resolve(translationCache.get(key));
+    const namespacedKey = getNamespacedKey(key);
+
+    if (translationCache.has(namespacedKey)) {
+      return Promise.resolve(translationCache.get(namespacedKey));
     }
 
-    if (pendingTranslations.has(key)) {
-      return pendingTranslations.get(key);
+    if (pendingTranslations.has(namespacedKey)) {
+      return pendingTranslations.get(namespacedKey);
     }
 
     const promise = requestTranslation(text)
       .then((data) => {
-        translationCache.set(key, data);
-        pendingTranslations.delete(key);
+        translationCache.set(namespacedKey, data);
+        pendingTranslations.delete(namespacedKey);
         return data;
       })
       .catch((error) => {
-        pendingTranslations.delete(key);
+        pendingTranslations.delete(namespacedKey);
         throw error;
       });
 
-    pendingTranslations.set(key, promise);
+    pendingTranslations.set(namespacedKey, promise);
     return promise;
   }
 
@@ -821,21 +1106,33 @@
       return;
     }
 
+    if (!displayTranslations) {
+      showTooltip({ text: '当前已切换为仅显示原文，在弹出面板开启后即可查看英文增强。' });
+      return;
+    }
+
+    if (!currentSettings.apiKey) {
+      showTooltip({ text: '尚未配置 API Key，请先在设置页完成配置。' });
+      return;
+    }
+
     const cacheKey = normalizeText(text);
     if (!cacheKey) {
       return;
     }
 
+    const namespacedKey = getNamespacedKey(cacheKey);
+
     iconHovered = true;
     showTooltip({ html: '', text: '翻译中...', loading: true });
 
-    if (translationCache.has(cacheKey)) {
-      const cached = translationCache.get(cacheKey);
+    if (translationCache.has(namespacedKey)) {
+      const cached = translationCache.get(namespacedKey);
       showTooltip({ html: buildTooltipHtml(cached) });
       return;
     }
 
-    const requestToken = { text, cacheKey };
+    const requestToken = { text, cacheKey: namespacedKey };
     activeRequest = requestToken;
 
     requestSharedTranslation(text, cacheKey)
@@ -906,6 +1203,8 @@
     }
   }
 
+  hydrateSettings();
+
   document.addEventListener('selectionchange', () => scheduleSelectionCheck(80));
   document.addEventListener('mouseup', () => scheduleSelectionCheck(20));
   document.addEventListener('keyup', (event) => {
@@ -964,13 +1263,20 @@
       body.innerText = 'Calling the language model…';
     } else if (state.status === 'error') {
       body.innerText = state.message || 'Translation failed.';
-    } else {
+    } else if (displayTranslations) {
       body.innerHTML = state.translationHtml;
+    } else {
+      body.innerText = state.sourceText || '原文已保持不变。';
     }
 
     container.appendChild(body);
 
-    if (state.status === 'ready' && Array.isArray(state.replacements) && state.replacements.length > 0) {
+    if (
+      displayTranslations &&
+      state.status === 'ready' &&
+      Array.isArray(state.replacements) &&
+      state.replacements.length > 0
+    ) {
       const meta = document.createElement('div');
       meta.className = 'ries-meta';
       meta.innerHTML = `
@@ -996,7 +1302,8 @@
         renderOverlay({
           status: 'ready',
           translationHtml: message.payload.translationHtml,
-          replacements: message.payload.replacements || []
+          replacements: message.payload.replacements || [],
+          sourceText: message.payload.sourceText
         });
         break;
       case 'RIES_TRANSLATION_ERROR':

@@ -7,7 +7,8 @@ const DEFAULT_SETTINGS = {
   model: 'gpt-4o-mini',
   temperature: 0.2,
   termTargetCount: 3,
-  termDifficulty: 'intermediate'
+  termDifficulty: 'intermediate',
+  showTranslations: true
 };
 
 export async function getSettings() {

@@ -1,83 +1,89 @@
-import { maskKey } from './settings.js';
+import { getSettings, saveSettings } from './settings.js';
 
-const sourceInput = document.getElementById('source');
-const translateButton = document.getElementById('translate');
+const displayToggle = document.getElementById('display-toggle');
+const termCountInput = document.getElementById('popup-term-count');
+const termDifficultySelect = document.getElementById('popup-term-difficulty');
+const statusEl = document.getElementById('status');
 const openOptionsLink = document.getElementById('open-options');
-const resultSection = document.getElementById('result');
-const resultOutput = document.getElementById('translation-output');
-const terminologyList = document.getElementById('terminology-list');
-const errorSection = document.getElementById('error');
+const modelMeta = document.getElementById('model-meta');
 
-function resetState() {
-  resultSection.classList.add('hidden');
-  errorSection.classList.add('hidden');
-  terminologyList.innerHTML = '';
-  resultOutput.innerHTML = '';
-}
+const allowedDifficulties = new Set(['basic', 'intermediate', 'advanced']);
+let currentSettings = null;
+let statusTimer = null;
 
-function renderTerminology(replacements) {
-  terminologyList.innerHTML = '';
-  for (const item of replacements) {
-    const li = document.createElement('li');
-    const english = document.createElement('span');
-    const chinese = document.createElement('span');
-    english.textContent = item.english;
-    chinese.textContent = item.chinese;
-    li.appendChild(english);
-    li.appendChild(chinese);
-    terminologyList.appendChild(li);
+function showStatus(message, timeout = 1800) {
+  if (!statusEl) return;
+  statusEl.textContent = message || '';
+  if (statusTimer) {
+    clearTimeout(statusTimer);
+    statusTimer = null;
+  }
+  if (message && timeout > 0) {
+    statusTimer = setTimeout(() => {
+      statusEl.textContent = '';
+      statusTimer = null;
+    }, timeout);
   }
 }
 
-function showError(message) {
-  errorSection.textContent = message;
-  errorSection.classList.remove('hidden');
+function clampTermCount(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return 3;
+  return Math.min(10, Math.max(1, parsed));
 }
 
-function showResult(data) {
-  resultOutput.innerHTML = data.translationHtml;
-  renderTerminology(data.replacements || []);
-  resultSection.classList.remove('hidden');
+async function hydrate() {
+  try {
+    const settings = await getSettings();
+    currentSettings = settings;
+    displayToggle.checked = settings.showTranslations !== false;
+    termCountInput.value = settings.termTargetCount;
+    termDifficultySelect.value = allowedDifficulties.has(settings.termDifficulty)
+      ? settings.termDifficulty
+      : 'intermediate';
+    modelMeta.textContent = settings.model ? `模型 ${settings.model}` : '';
+    showStatus('设置已同步', 1200);
+  } catch (error) {
+    console.error('Failed to load settings in popup', error);
+    showStatus('加载设置失败，请稍后重试。', 0);
+  }
 }
 
-function setLoading(isLoading) {
-  translateButton.disabled = isLoading;
-  translateButton.textContent = isLoading ? 'Translating…' : 'Translate';
-}
-
-async function requestTranslation(text) {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({ type: 'RIES_TRANSLATE_TEXT', text }, (response) => {
-      if (!response) {
-        reject(new Error('No response from background script. Check your permissions.'));
-      } else if (!response.ok) {
-        reject(new Error(response.error || 'Translation failed.'));
-      } else {
-        resolve(response.data);
-      }
-    });
-  });
-}
-
-translateButton.addEventListener('click', async () => {
-  const text = sourceInput.value.trim();
-  if (!text) {
-    showError('请先输入要翻译的中文内容。');
+async function persistSettings(partial, successMessage) {
+  if (!currentSettings) {
     return;
   }
-
-  resetState();
-  setLoading(true);
-
   try {
-    const data = await requestTranslation(text);
-    showResult(data);
+    const next = { ...currentSettings, ...partial };
+    const saved = await saveSettings(next);
+    currentSettings = saved;
+    showStatus(successMessage || '已保存');
   } catch (error) {
-    console.error(error);
-    showError(error.message);
-  } finally {
-    setLoading(false);
+    console.error('Failed to save settings from popup', error);
+    showStatus('保存失败，请检查控制台。', 0);
   }
+}
+
+displayToggle.addEventListener('change', () => {
+  const enabled = displayToggle.checked;
+  persistSettings(
+    { showTranslations: enabled },
+    enabled ? '已切换为显示英文增强内容' : '已切换为仅显示原文'
+  );
+});
+
+termCountInput.addEventListener('change', () => {
+  const bounded = clampTermCount(termCountInput.value);
+  termCountInput.value = bounded;
+  persistSettings({ termTargetCount: bounded }, '术语数量已更新');
+});
+
+termDifficultySelect.addEventListener('change', () => {
+  const value = allowedDifficulties.has(termDifficultySelect.value)
+    ? termDifficultySelect.value
+    : 'intermediate';
+  termDifficultySelect.value = value;
+  persistSettings({ termDifficulty: value }, '术语难度已更新');
 });
 
 openOptionsLink.addEventListener('click', (event) => {
@@ -85,16 +91,6 @@ openOptionsLink.addEventListener('click', (event) => {
   chrome.runtime.openOptionsPage();
 });
 
-chrome.storage.sync.get(null, (items) => {
-  const settings = items['ries-translator-settings'];
-  if (!settings || !settings.apiKey) {
-    showError('请在配置页设置大模型接口和 API Key。');
-  } else {
-    const masked = maskKey(settings.apiKey);
-    const note = document.createElement('p');
-    note.style.fontSize = '12px';
-    note.style.color = '#94a3b8';
-    note.textContent = `Using model ${settings.model} · Key ${masked}`;
-    resultSection.parentElement.insertBefore(note, resultSection);
-  }
+hydrate().catch(() => {
+  showStatus('加载设置失败，请检查控制台。', 0);
 });
